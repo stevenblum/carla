@@ -96,9 +96,12 @@ if %BUILD_OSM2ODR% == true (
     cd "%INSTALLATION_DIR%"
     if not exist "%OSM2ODR_SOURCE_PATH%" (
         curl --retry 5 --retry-max-time 120 -L -o OSM2ODR.zip https://github.com/carla-simulator/sumo/archive/%CURRENT_OSM2ODR_COMMIT%.zip
+        if errorlevel 1 goto error_install
         tar -xf OSM2ODR.zip
+        if errorlevel 1 goto error_install
         del OSM2ODR.zip
         ren sumo-%CURRENT_OSM2ODR_COMMIT% osm2odr-source
+        if errorlevel 1 goto error_install
     )
     
     cd ..
@@ -111,12 +114,15 @@ if %BUILD_OSM2ODR% == true (
         -DPROJ_INCLUDE_DIR=%INSTALLATION_DIR:/=\%\proj-install\include^
         -DPROJ_LIBRARY=%INSTALLATION_DIR:/=\%\proj-install\lib\proj.lib^
         -DXercesC_INCLUDE_DIR=%INSTALLATION_DIR:/=\%\xerces-c-3.2.3-install\include^
-        -DXercesC_LIBRARY=%INSTALLATION_DIR:/=\%\xerces-c-3.2.3-install\lib\xerces-c.lib^
-        "%OSM2ODR_SOURCE_PATH%"
-    if %errorlevel% neq 0 goto error_cmake
+        -DXercesC_LIBRARY=%INSTALLATION_DIR:/=\%\xerces-c-3.2.3-install\lib\xerces-c_3.lib^
+        "%OSM2ODR_SOURCE_PATH:~0,-1%"
+    rem A quoted trailing backslash escapes the closing quote in CMake's argv.
+    rem Check the current errorlevel, not a value expanded before this block ran.
+    if errorlevel 1 goto error_cmake
 
-    cmake --build . --config Release --target install | findstr /V "Up-to-date:"
-    if %errorlevel% neq 0 goto error_install
+    rem Preserve CMake's exit status rather than the trailing filter's status.
+    cmake --build . --config Release --target install
+    if errorlevel 1 goto error_install
     copy %OSM2ODR_INSTALL_PATH%\lib\osm2odr.lib %CARLA_DEPENDENCIES_FOLDER%\lib
     copy %OSM2ODR_INSTALL_PATH%\include\OSM2ODR.h %CARLA_DEPENDENCIES_FOLDER%\include
 )
@@ -156,4 +162,4 @@ rem ============================================================================
 
 :bad_exit
     endlocal
-    exit /b %errorlevel%
+    exit /b 1

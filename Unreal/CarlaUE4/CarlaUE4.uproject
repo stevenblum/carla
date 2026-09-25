@@ -124,6 +124,30 @@
 		{
 			"Name": "HairStrands",
 			"Enabled": true
+		},
+		{
+			"Name": "MDL",
+			"Enabled": false
+		},
+		{
+			"Name": "SimReady",
+			"Enabled": false
+		},
+		{
+			"Name": "HumanDriver",
+			"Enabled": true
+		},
+		{
+			"Name": "OpenXR",
+			"Enabled": true
+		},
+		{
+			"Name": "RawInput",
+			"Enabled": true
+		},
+		{
+			"Name": "OpenXREyeTracker",
+			"Enabled": false
 		}
 	]
 }

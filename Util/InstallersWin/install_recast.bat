@@ -88,7 +88,7 @@ if %errorlevel%  neq 0 goto error_cmake
 echo %FILE_N% Building...
 cmake --build . --config Release --target install
 
-if errorlevel  neq 0 goto error_install
+if errorlevel 1 goto error_install
 
 rem Remove the downloaded Recast & Detour source because is no more needed
 if %DEL_SRC% == true (
