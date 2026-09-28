@@ -148,6 +148,10 @@
 		{
 			"Name": "OpenXREyeTracker",
 			"Enabled": false
+		},
+		{
+			"Name": "HumanForceFeedback",
+			"Enabled": true
 		}
 	]
 }
