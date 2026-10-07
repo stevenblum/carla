@@ -16,9 +16,27 @@
 #include "Engine/SkeletalMesh.h"
 #include "Engine/StaticMesh.h"
 #include "EngineUtils.h"
+#include "Misc/CommandLine.h"
+#include "Misc/Parse.h"
 #include "PhysicsEngine/PhysicsAsset.h"
 
 namespace crp = carla::rpc;
+
+static bool CreateAnnotationComponents()
+{
+  // Annotation image cameras need these duplicate primitives, but human-driving
+  // sessions do not. Read the startup switch once so all initial, spawned, and
+  // streamed actors follow the same policy for the lifetime of this process.
+  static const bool bCreateAnnotationComponents = []() {
+    const bool bDisabled = FParse::Param(
+        FCommandLine::Get(), TEXT("CarlaDisableAnnotationComponents"));
+    UE_LOG(LogCarla, Log, TEXT("Annotation components: %s (-CarlaDisableAnnotationComponents %s)"),
+        bDisabled ? TEXT("disabled") : TEXT("enabled"),
+        bDisabled ? TEXT("present") : TEXT("absent"));
+    return !bDisabled;
+  }();
+  return bCreateAnnotationComponents;
+}
 
 template <typename T>
 static auto CastEnum(T label)
@@ -115,6 +133,7 @@ T* ATagger::FindTaggedComponent(const USceneComponent* Component) {
 
 void ATagger::TagActor(const AActor &Actor, bool bTagForSemanticSegmentation, uint32_t ActorID)
 {
+  const bool bCreateAnnotationComponents = CreateAnnotationComponents();
 #ifdef CARLA_TAGGER_EXTRA_LOG
   UE_LOG(LogCarla, Log, TEXT("Actor: %s %d %d"), *Actor.GetName(), Actor.GetUniqueID(), ActorID);
 #endif // CARLA_TAGGER_EXTRA_LOG
@@ -135,7 +154,7 @@ void ATagger::TagActor(const AActor &Actor, bool bTagForSemanticSegmentation, ui
     UE_LOG(LogCarla, Log, TEXT("    - Label: \"%s\""), *GetTagAsString(Label));
 #endif // CARLA_TAGGER_EXTRA_LOG
 
-    if(!Component->IsVisible() || !Component->GetStaticMesh())
+    if(!bCreateAnnotationComponents || !Component->IsVisible() || !Component->GetStaticMesh())
     {
       continue;
     }
@@ -182,7 +201,7 @@ void ATagger::TagActor(const AActor &Actor, bool bTagForSemanticSegmentation, ui
     UE_LOG(LogCarla, Log, TEXT("    - Label: \"%s\""), *GetTagAsString(Label));
 #endif // CARLA_TAGGER_EXTRA_LOG
 
-    if(!Component->IsVisible() || !Component->GetSkeletalMeshRenderData())
+    if(!bCreateAnnotationComponents || !Component->IsVisible() || !Component->GetSkeletalMeshRenderData())
     {
       continue;
     }
@@ -224,6 +243,11 @@ void ATagger::TagActor(const AActor &Actor, bool bTagForSemanticSegmentation, ui
 #ifdef CARLA_TAGGER_EXTRA_LOG
     UE_LOG(LogCarla, Log, TEXT("  + LandscapeComponent: %s"), *Component->GetName());
 #endif // CARLA_TAGGER_EXTRA_LOG
+
+    if (!bCreateAnnotationComponents)
+    {
+      continue;
+    }
 
     // Find a tagged component that is attached to this component
     UTaggedLandscapeComponent *TaggedComponent = FindTaggedComponent<UTaggedLandscapeComponent>(Component);
