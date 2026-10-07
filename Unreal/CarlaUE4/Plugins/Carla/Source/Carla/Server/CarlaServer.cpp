@@ -7,6 +7,7 @@
 #include "Carla.h"
 #include "Carla/Server/CarlaServer.h"
 #include "Carla/Server/CarlaServerResponse.h"
+#include "Carla/Server/TrafficManagerLatency.h"
 #include "Carla/Game/CarlaHUD.h"
 #include "Carla/Traffic/TrafficLightGroup.h"
 #include "EngineUtils.h"
@@ -84,6 +85,7 @@
 #include <atomic>
 #include <map>
 #include <tuple>
+#include <stdexcept>
 
 template <typename T>
 using R = carla::rpc::Response<T>;
@@ -3213,6 +3215,80 @@ BIND_SYNC(is_sensor_enabled_for_ros) << [this](carla::streaming::detail::stream_
       tick_cue();
     }
     return result;
+  };
+
+  // Only the parent-owned TM uses this observed endpoint, and only when its
+  // bounded diagnostic mode is enabled. It executes the same command visitor
+  // as apply_batch; ordinary sessions keep the original RPC path unchanged.
+  using TmActorToken = std::tuple<uint32_t, uint64_t, uint64_t>;
+  Server.BindSyncObserved("tm_diag_apply_batch", [=](
+      uint64_t batch, uint64_t episode, uint64_t source_frame,
+      double source_platform_seconds, const std::vector<cr::Command> &commands,
+      const std::vector<TmActorToken> &tokens) -> std::vector<CR> {
+    CARLA_ENSURE_GAME_THREAD();
+    size_t vehicle_commands = 0;
+    for (const auto &command : commands) {
+      if (boost::variant2::get_if<C::ApplyVehicleControl>(&command.command)) ++vehicle_commands;
+    }
+    if (vehicle_commands != tokens.size()) {
+      throw std::runtime_error("TM diagnostic token count does not match vehicle controls");
+    }
+    size_t check_index = 0;
+    for (const auto &command : commands) {
+      if (const auto *control = boost::variant2::get_if<C::ApplyVehicleControl>(&command.command)) {
+        if (std::get<0>(tokens[check_index++]) != control->actor) {
+          throw std::runtime_error("TM diagnostic token actor does not match command");
+        }
+      }
+    }
+    size_t token_index = 0;
+    std::vector<CR> result;
+    result.reserve(commands.size());
+    for (const auto &command : commands) {
+      if (const auto *control = boost::variant2::get_if<C::ApplyVehicleControl>(&command.command)) {
+        const auto &token = tokens[token_index++];
+        FCarlaActor *actor = Episode ? Episode->FindCarlaActor(control->actor) : nullptr;
+        ACarlaWheeledVehicle *vehicle = actor ? Cast<ACarlaWheeledVehicle>(actor->GetActor()) : nullptr;
+        if (vehicle) {
+          vehicle->SetTrafficManagerDiagnosticToken(control->actor, batch,
+              std::get<1>(token), std::get<2>(token), episode,
+              source_frame, source_platform_seconds);
+        } else {
+          FTrafficManagerLatency::Get().Push("actor_unavailable", batch,
+              control->actor, std::get<1>(token), std::get<2>(token),
+              FCarlaEngine::GetFrameCounter(), 0, episode, source_frame,
+              source_platform_seconds);
+        }
+        const CR response = boost::variant2::visit(command_visitor, command.command);
+        if (response.HasError() && vehicle) vehicle->CancelTrafficManagerDiagnosticToken();
+        if (response.HasError()) {
+          FTrafficManagerLatency::Get().Push("command_error", batch,
+              control->actor, std::get<1>(token), std::get<2>(token),
+              FCarlaEngine::GetFrameCounter(), 0, episode, source_frame,
+              source_platform_seconds);
+        }
+        result.emplace_back(response);
+        continue;
+      }
+      result.emplace_back(boost::variant2::visit(command_visitor, command.command));
+    }
+    FTrafficManagerLatency::Get().Push("batch_applied", batch, 0, 0, 0,
+        FCarlaEngine::GetFrameCounter(), 0, episode, source_frame,
+        source_platform_seconds);
+    return result;
+  }, [](uint64_t batch, bool enqueued, uint64_t depth) {
+    FTrafficManagerLatency::Get().Push(enqueued ? "rpc_enqueue" : "rpc_dequeue",
+        batch, 0, 0, 0, enqueued ? 0 : FCarlaEngine::GetFrameCounter(),
+        depth, 0, 0, 0.0);
+  });
+
+  BIND_SYNC(tm_diag_drain) << []() -> std::vector<FTrafficManagerLatencyEvent> {
+    return FTrafficManagerLatency::Get().Drain();
+  };
+  BIND_SYNC(tm_diag_ping) << []() -> std::tuple<uint64_t, uint64_t, uint64_t> {
+    return {FPlatformTime::Cycles64(),
+        static_cast<uint64_t>(1.0 / FPlatformTime::GetSecondsPerCycle()),
+        FCarlaEngine::GetFrameCounter()};
   };
 
   // ~~ Light Subsystem ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

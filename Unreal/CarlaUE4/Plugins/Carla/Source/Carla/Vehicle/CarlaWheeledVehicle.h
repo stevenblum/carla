@@ -208,19 +208,14 @@ public:
 public:
 
   UFUNCTION(Category = "CARLA Wheeled Vehicle", BlueprintCallable)
-  void ApplyVehicleControl(const FVehicleControl &Control, EVehicleInputPriority Priority)
-  {
-    if (bAckermannControlActive) {
-      AckermannController.Reset();
-    }
-    bAckermannControlActive = false;
+  void ApplyVehicleControl(const FVehicleControl &Control, EVehicleInputPriority Priority);
 
-    if (InputControl.Priority <= Priority)
-    {
-      InputControl.Control = Control;
-      InputControl.Priority = Priority;
-    }
-  }
+  // Armed only by the diagnostic TM batch endpoint. The normal vehicle input
+  // path keeps its original priority semantics and never allocates a token.
+  void SetTrafficManagerDiagnosticToken(uint32 Actor, uint64 Batch,
+      uint64 Generation, uint64 Sequence, uint64 Episode,
+      uint64 SourceFrame, double SourcePlatformSeconds);
+  void CancelTrafficManagerDiagnosticToken();
 
   UFUNCTION(Category = "CARLA Wheeled Vehicle", BlueprintCallable)
   void ApplyVehicleAckermannControl(const FVehicleAckermannControl &AckermannControl, EVehicleInputPriority Priority)
@@ -347,6 +342,13 @@ private:
   InputControl;
 
   FVehicleControl LastAppliedControl;
+  struct FTrafficManagerDiagnosticToken {
+    uint32 Actor = 0;
+    uint64 Batch = 0, Generation = 0, Sequence = 0;
+    uint64 Episode = 0, SourceFrame = 0;
+    double SourcePlatformSeconds = 0.0;
+    bool Armed = false, Pending = false;
+  } TrafficManagerDiagnosticToken;
   FVehicleAckermannControl LastAppliedAckermannControl;
   FVehiclePhysicsControl LastPhysicsControl;
 

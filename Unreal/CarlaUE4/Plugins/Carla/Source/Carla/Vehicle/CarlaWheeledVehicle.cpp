@@ -21,6 +21,8 @@
 #include "Carla.h"
 #include "Carla/Game/CarlaHUD.h"
 #include "Carla/Game/CarlaStatics.h"
+#include "Carla/Game/CarlaEngine.h"
+#include "Carla/Server/TrafficManagerLatency.h"
 #include "Carla/Trigger/FrictionTrigger.h"
 #include "Carla/Util/ActorAttacher.h"
 #include "Carla/Util/EmptyActor.h"
@@ -341,7 +343,58 @@ void ACarlaWheeledVehicle::FlushVehicleControl()
   BaseMovementComponent->ProcessControl(InputControl.Control);
   InputControl.Control.bReverse = InputControl.Control.Gear < 0;
   LastAppliedControl = InputControl.Control;
+  if (TrafficManagerDiagnosticToken.Pending) {
+    const auto &Token = TrafficManagerDiagnosticToken;
+    FTrafficManagerLatency::Get().Push("flush", Token.Batch, Token.Actor,
+        Token.Generation, Token.Sequence, FCarlaEngine::GetFrameCounter(), 0,
+        Token.Episode, Token.SourceFrame, Token.SourcePlatformSeconds);
+    TrafficManagerDiagnosticToken.Pending = false;
+  }
   InputControl.Priority = EVehicleInputPriority::INVALID;
+}
+
+void ACarlaWheeledVehicle::SetTrafficManagerDiagnosticToken(uint32 Actor,
+    uint64 Batch, uint64 Generation, uint64 Sequence, uint64 Episode,
+    uint64 SourceFrame, double SourcePlatformSeconds) {
+  if (TrafficManagerDiagnosticToken.Pending) {
+    const auto &Old = TrafficManagerDiagnosticToken;
+    FTrafficManagerLatency::Get().Push("overwritten", Old.Batch, Old.Actor,
+        Old.Generation, Old.Sequence, FCarlaEngine::GetFrameCounter(), 0,
+        Old.Episode, Old.SourceFrame, Old.SourcePlatformSeconds);
+  }
+  TrafficManagerDiagnosticToken = {Actor, Batch, Generation, Sequence,
+      Episode, SourceFrame, SourcePlatformSeconds, true, false};
+}
+
+void ACarlaWheeledVehicle::CancelTrafficManagerDiagnosticToken() {
+  TrafficManagerDiagnosticToken.Armed = false;
+  TrafficManagerDiagnosticToken.Pending = false;
+}
+
+void ACarlaWheeledVehicle::ApplyVehicleControl(const FVehicleControl &Control,
+    EVehicleInputPriority Priority) {
+  if (bAckermannControlActive) AckermannController.Reset();
+  bAckermannControlActive = false;
+  const bool Accepted = InputControl.Priority <= Priority;
+  if (TrafficManagerDiagnosticToken.Armed) {
+    auto &Token = TrafficManagerDiagnosticToken;
+    FTrafficManagerLatency::Get().Push(Accepted ? "priority_accepted" : "priority_rejected",
+        Token.Batch, Token.Actor, Token.Generation, Token.Sequence,
+        FCarlaEngine::GetFrameCounter(), 0, Token.Episode, Token.SourceFrame,
+        Token.SourcePlatformSeconds);
+    Token.Pending = Accepted;
+    Token.Armed = false;
+  } else if (Accepted && TrafficManagerDiagnosticToken.Pending) {
+    auto &Token = TrafficManagerDiagnosticToken;
+    FTrafficManagerLatency::Get().Push("overwritten", Token.Batch, Token.Actor,
+        Token.Generation, Token.Sequence, FCarlaEngine::GetFrameCounter(), 0,
+        Token.Episode, Token.SourceFrame, Token.SourcePlatformSeconds);
+    Token.Pending = false;
+  }
+  if (Accepted) {
+    InputControl.Control = Control;
+    InputControl.Priority = Priority;
+  }
 }
 
 void ACarlaWheeledVehicle::SetThrottleInput(const float Value)

@@ -17,6 +17,8 @@
 #include <rpc/server.h>
 
 #include <future>
+#include <atomic>
+#include <tuple>
 
 namespace carla {
 namespace rpc {
@@ -43,6 +45,12 @@ namespace rpc {
     template <typename FunctorT>
     void BindSync(const std::string &name, FunctorT &&functor);
 
+    // Diagnostic-only variant: the observer sees RPC worker enqueue and Game
+    // Thread dequeue for a request whose first argument is a batch ID. Normal
+    // synchronous bindings and their command semantics are unchanged.
+    template <typename FunctorT, typename ObserverT>
+    void BindSyncObserved(const std::string &name, FunctorT &&functor, ObserverT &&observer);
+
     template <typename FunctorT>
     void BindAsync(const std::string &name, FunctorT &&functor);
 
@@ -68,6 +76,7 @@ namespace rpc {
   private:
 
     boost::asio::io_context _sync_io_context;
+    std::atomic<uint64_t> _observed_pending{0};
 
     ::rpc::server _server;
   };
@@ -124,6 +133,30 @@ namespace detail {
       };
     }
 
+    template <typename FuncT, typename ObserverT>
+    static auto WrapSyncObserved(boost::asio::io_context &io,
+                                 std::atomic<uint64_t> &pending,
+                                 FuncT &&functor, ObserverT &&observer) {
+      return [&io, &pending, functor=std::forward<FuncT>(functor),
+              observer=std::forward<ObserverT>(observer)](Metadata metadata, Args... args) -> R {
+        const uint64_t batch = static_cast<uint64_t>(std::get<0>(std::forward_as_tuple(args...)));
+        const uint64_t depth = pending.fetch_add(1, std::memory_order_relaxed) + 1;
+        observer(batch, true, depth);
+        auto task = std::packaged_task<R()>([functor, observer, &pending, batch, args...]() {
+          const uint64_t depth_at_dequeue = pending.fetch_sub(1, std::memory_order_relaxed);
+          observer(batch, false, depth_at_dequeue);
+          return functor(args...);
+        });
+        if (metadata.IsResponseIgnored()) {
+          boost::asio::post(io, MoveHandler(task));
+          return R();
+        }
+        auto result = task.get_future();
+        boost::asio::post(io, MoveHandler(task));
+        return result.get();
+      };
+    }
+
     /// Wraps @a functor into a function type with equivalent signature that
     /// handles the metadata sent by the client. If the client called this
     /// method asynchronously, the result is ignored.
@@ -154,6 +187,14 @@ namespace detail {
     _server.bind(
         name,
         Wrapper::WrapSyncCall(_sync_io_context, std::forward<FunctorT>(functor)));
+  }
+
+  template <typename FunctorT, typename ObserverT>
+  inline void Server::BindSyncObserved(const std::string &name,
+                                      FunctorT &&functor, ObserverT &&observer) {
+    using Wrapper = detail::FunctionWrapper<FunctorT>;
+    _server.bind(name, Wrapper::WrapSyncObserved(_sync_io_context, _observed_pending,
+        std::forward<FunctorT>(functor), std::forward<ObserverT>(observer)));
   }
 
   template <typename FunctorT>
